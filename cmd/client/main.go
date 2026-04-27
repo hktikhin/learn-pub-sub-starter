@@ -10,6 +10,20 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
+func handlerPause(gs *gamelogic.GameState) func(routing.PlayingState) {
+	return func(ps routing.PlayingState) {
+		defer fmt.Print("> ")
+		gs.HandlePause(ps)
+	}
+}
+
+func handlerMove(gs *gamelogic.GameState) func(gamelogic.ArmyMove) {
+	return func(move gamelogic.ArmyMove) {
+		defer fmt.Print("> ")
+		gs.HandleMove(move)
+	}
+}
+
 func main() {
 	fmt.Println("Starting Peril client...")
 	connStr := "amqp://guest:guest@localhost:5672/"
@@ -22,6 +36,12 @@ func main() {
 		fmt.Println("RabbitMQ connection closed")
 	}()
 	fmt.Println("connected to RabbitMQ")
+	ch, err := conn.Channel()
+	if err != nil {
+		log.Fatalf("cannot create channel: %v", err)
+	}
+	defer ch.Close()
+	fmt.Println("mq channel created")
 	username, err := gamelogic.ClientWelcome()
 	gameState := gamelogic.NewGameState(username)
 	gamelogic.PrintClientHelp()
@@ -32,6 +52,17 @@ func main() {
 		routing.PauseKey,
 		pubsub.Transient,
 		handlerPause(gameState),
+	)
+	if err != nil {
+		log.Fatalf("can't subscribe to the queue: %v", err)
+	}
+	err = pubsub.SubscribeJSON(
+		conn,
+		routing.ExchangePerilTopic,
+		fmt.Sprintf("%s.%s", routing.ArmyMovesPrefix, username),
+		fmt.Sprintf("%s.*", routing.ArmyMovesPrefix),
+		pubsub.Transient,
+		handlerMove(gameState),
 	)
 	if err != nil {
 		log.Fatalf("can't subscribe to the queue: %v", err)
@@ -50,11 +81,16 @@ func main() {
 			}
 
 		case "move":
-			_, err := gameState.CommandMove(words)
+			move, err := gameState.CommandMove(words)
 			if err != nil {
 				fmt.Printf("Move failed: %v\n", err)
 			} else {
 				fmt.Println("Move successful!")
+			}
+			fmt.Println("Sending a move message...")
+			err = pubsub.PublishJSON(ch, routing.ExchangePerilTopic, fmt.Sprintf("%s.%s", routing.ArmyMovesPrefix, username), move)
+			if err != nil {
+				log.Printf("publish failed: %v", err)
 			}
 
 		case "status":
@@ -81,11 +117,4 @@ func main() {
 	// fmt.Println("waiting for exit signal(ctrl+c)...")
 	// sig := <-sigChan
 	// fmt.Printf("\nsignal received: %v.Closing the program...\n", sig)
-}
-
-func handlerPause(gs *gamelogic.GameState) func(routing.PlayingState) {
-	return func(ps routing.PlayingState) {
-		defer fmt.Print("> ")
-		gs.HandlePause(ps)
-	}
 }
