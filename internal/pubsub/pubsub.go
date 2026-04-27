@@ -15,6 +15,14 @@ const (
 	Transient
 )
 
+type AckType int
+
+const (
+	Ack AckType = iota
+	NackRequeue
+	NackDiscard
+)
+
 func (sqt SimpleQueueType) String() string {
 	switch sqt {
 	case Durable:
@@ -96,7 +104,7 @@ func SubscribeJSON[T any](
 	queueName,
 	key string,
 	queueType SimpleQueueType, // an enum to represent "durable" or "transient"
-	handler func(T),
+	handler func(T) AckType,
 ) error {
 	ch, _, err := DeclareAndBind(
 		conn,
@@ -124,15 +132,33 @@ func SubscribeJSON[T any](
 		return err
 	}
 	go func() {
+		defer ch.Close()
 		for d := range msgs {
-			defer ch.Close()
 			var msg T
-			json.Unmarshal(d.Body, &msg)
+			if err := json.Unmarshal(d.Body, &msg); err != nil {
+				log.Printf("JSON unmarshal error: %v", err)
+				d.Nack(false, false)
+				continue
+			}
 			log.Printf("Received a message: %v", msg)
-			handler(msg)
-			err = d.Ack(false)
-			if err != nil {
-				log.Printf("Failed to ack the message: %v", err)
+			action := handler(msg)
+			var ackErr error
+			switch action {
+			case Ack:
+				log.Printf("Acking message")
+				ackErr = d.Ack(false)
+			case NackRequeue:
+				log.Printf("Nacking message (requeueing)")
+				ackErr = d.Nack(false, true)
+			case NackDiscard:
+				log.Printf("Nacking message (discarding)")
+				ackErr = d.Nack(false, false)
+			default:
+				log.Printf("Unknown acktype: %v, defaulting to NackRequeue", action)
+				ackErr = d.Nack(false, true)
+			}
+			if ackErr != nil {
+				log.Printf("Failed to ack the message: %v", ackErr)
 			}
 		}
 	}()
