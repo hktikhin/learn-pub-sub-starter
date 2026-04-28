@@ -68,6 +68,11 @@ func DeclareAndBind(
 	isDurable := (queueType == Durable)
 	isAutoDelete := (queueType == Transient)
 	isExclusive := (queueType == Transient)
+	dlxExchange := "peril_dlx"
+
+	args := amqp.Table{
+		"x-dead-letter-exchange": dlxExchange,
+	}
 
 	q, err := ch.QueueDeclare(
 		queueName,    // name
@@ -75,7 +80,7 @@ func DeclareAndBind(
 		isAutoDelete, // autoDelete
 		isExclusive,  // exclusive
 		false,        // noWait
-		nil,          // args
+		args,         // args
 	)
 	if err != nil {
 		log.Printf("Error declaring queue %s: %v", queueName, err)

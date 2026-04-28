@@ -18,17 +18,61 @@ func handlerPause(gs *gamelogic.GameState) func(routing.PlayingState) pubsub.Ack
 	}
 }
 
-func handlerMove(gs *gamelogic.GameState) func(gamelogic.ArmyMove) pubsub.AckType {
+func handlerMove(gs *gamelogic.GameState, ch *amqp.Channel) func(move gamelogic.ArmyMove) pubsub.AckType {
 	return func(move gamelogic.ArmyMove) pubsub.AckType {
 		defer fmt.Print("> ")
 		moveOutcome := gs.HandleMove(move)
 		switch moveOutcome {
-		case gamelogic.MoveOutComeSafe, gamelogic.MoveOutcomeMakeWar:
+		case gamelogic.MoveOutcomeMakeWar:
+			fmt.Println("Sending a war message because of the move...")
+			warMsg := gamelogic.RecognitionOfWar{
+				Attacker: move.Player,
+				Defender: gs.GetPlayerSnap(),
+			}
+			err := pubsub.PublishJSON(ch, routing.ExchangePerilTopic, fmt.Sprintf("%s.%s", routing.WarRecognitionsPrefix, gs.GetUsername()), warMsg)
+			if err != nil {
+				log.Printf("publish failed: %v", err)
+				return pubsub.NackRequeue
+
+			}
+			return pubsub.Ack
+		case gamelogic.MoveOutComeSafe:
 			return pubsub.Ack
 		case gamelogic.MoveOutcomeSamePlayer:
 			return pubsub.NackDiscard
 		default:
 			log.Printf("Unexpected move outcome: %v, discarding message", moveOutcome)
+			return pubsub.NackDiscard
+		}
+	}
+}
+
+func handlerWar(gs *gamelogic.GameState) func(warMsg gamelogic.RecognitionOfWar) pubsub.AckType {
+	return func(warMsg gamelogic.RecognitionOfWar) pubsub.AckType {
+		defer fmt.Print("> ")
+		outcome, _, _ := gs.HandleWar(warMsg)
+
+		switch outcome {
+		case gamelogic.WarOutcomeNotInvolved:
+			return pubsub.NackRequeue
+
+		case gamelogic.WarOutcomeNoUnits:
+			return pubsub.NackDiscard
+
+		case gamelogic.WarOutcomeOpponentWon:
+			fmt.Printf("War outcome: Opponent won\n")
+			return pubsub.Ack
+
+		case gamelogic.WarOutcomeYouWon:
+			fmt.Printf("War outcome: You won!\n")
+			return pubsub.Ack
+
+		case gamelogic.WarOutcomeDraw:
+			fmt.Printf("War outcome: Draw\n")
+			return pubsub.Ack
+
+		default:
+			log.Printf("Error: unexpected war outcome: %v", outcome)
 			return pubsub.NackDiscard
 		}
 	}
@@ -72,7 +116,18 @@ func main() {
 		fmt.Sprintf("%s.%s", routing.ArmyMovesPrefix, username),
 		fmt.Sprintf("%s.*", routing.ArmyMovesPrefix),
 		pubsub.Transient,
-		handlerMove(gameState),
+		handlerMove(gameState, ch),
+	)
+	if err != nil {
+		log.Fatalf("can't subscribe to the queue: %v", err)
+	}
+	err = pubsub.SubscribeJSON(
+		conn,
+		routing.ExchangePerilTopic,
+		fmt.Sprintf("%s", routing.WarRecognitionsPrefix),
+		fmt.Sprintf("%s.*", routing.WarRecognitionsPrefix),
+		pubsub.Durable,
+		handlerWar(gameState),
 	)
 	if err != nil {
 		log.Fatalf("can't subscribe to the queue: %v", err)
