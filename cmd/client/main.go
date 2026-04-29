@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"log"
+	"strconv"
+	"time"
 
 	"github.com/bootdotdev/learn-pub-sub-starter/internal/gamelogic"
 	"github.com/bootdotdev/learn-pub-sub-starter/internal/pubsub"
@@ -47,10 +49,25 @@ func handlerMove(gs *gamelogic.GameState, ch *amqp.Channel) func(move gamelogic.
 	}
 }
 
-func handlerWar(gs *gamelogic.GameState) func(warMsg gamelogic.RecognitionOfWar) pubsub.AckType {
+func publishGameLog(ch *amqp.Channel, username string, msg string) error {
+	logEntry := routing.GameLog{
+		CurrentTime: time.Now().UTC(),
+		Message:     msg,
+		Username:    username,
+	}
+	routingKey := fmt.Sprintf("%s.%s", routing.GameLogSlug, username)
+	return pubsub.PublishGob(
+		ch,
+		routing.ExchangePerilTopic,
+		routingKey,
+		logEntry,
+	)
+}
+
+func handlerWar(gs *gamelogic.GameState, ch *amqp.Channel) func(warMsg gamelogic.RecognitionOfWar) pubsub.AckType {
 	return func(warMsg gamelogic.RecognitionOfWar) pubsub.AckType {
 		defer fmt.Print("> ")
-		outcome, _, _ := gs.HandleWar(warMsg)
+		outcome, winner, loser := gs.HandleWar(warMsg)
 
 		switch outcome {
 		case gamelogic.WarOutcomeNotInvolved:
@@ -60,14 +77,26 @@ func handlerWar(gs *gamelogic.GameState) func(warMsg gamelogic.RecognitionOfWar)
 			return pubsub.NackDiscard
 
 		case gamelogic.WarOutcomeOpponentWon:
+			err := publishGameLog(ch, gs.GetUsername(), fmt.Sprintf("%s won a war against %s", winner, loser))
+			if err != nil {
+				fmt.Printf("Error publishing log: %v\n", err)
+			}
 			fmt.Printf("War outcome: Opponent won\n")
 			return pubsub.Ack
 
 		case gamelogic.WarOutcomeYouWon:
+			err := publishGameLog(ch, gs.GetUsername(), fmt.Sprintf("%s won a war against %s", winner, loser))
+			if err != nil {
+				fmt.Printf("Error publishing log: %v\n", err)
+			}
 			fmt.Printf("War outcome: You won!\n")
 			return pubsub.Ack
 
 		case gamelogic.WarOutcomeDraw:
+			err := publishGameLog(ch, gs.GetUsername(), fmt.Sprintf("A war between %s and %s resulted in a draw", winner, loser))
+			if err != nil {
+				fmt.Printf("Error publishing log: %v\n", err)
+			}
 			fmt.Printf("War outcome: Draw\n")
 			return pubsub.Ack
 
@@ -127,7 +156,7 @@ func main() {
 		fmt.Sprintf("%s", routing.WarRecognitionsPrefix),
 		fmt.Sprintf("%s.*", routing.WarRecognitionsPrefix),
 		pubsub.Durable,
-		handlerWar(gameState),
+		handlerWar(gameState, ch),
 	)
 	if err != nil {
 		log.Fatalf("can't subscribe to the queue: %v", err)
@@ -165,7 +194,29 @@ func main() {
 			gamelogic.PrintClientHelp()
 
 		case "spam":
-			fmt.Println("Spamming not allowed yet!")
+			if len(words) < 2 {
+				fmt.Println("Usage: spam <number>")
+				continue
+			}
+
+			n, err := strconv.Atoi(words[1])
+			if err != nil {
+				fmt.Printf("Error: %v is not a valid number\n", words[1])
+				continue
+			}
+
+			fmt.Printf("Spamming %d malicious logs...\n", n)
+
+			for i := range n {
+				message := gamelogic.GetMaliciousLog()
+
+				err := publishGameLog(ch, gameState.GetUsername(), message)
+				if err != nil {
+					fmt.Printf("Error sending spam log %d: %v\n", i, err)
+					break
+				}
+			}
+			fmt.Println("Spamming complete.")
 
 		case "quit":
 			gamelogic.PrintQuit()

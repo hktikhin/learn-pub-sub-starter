@@ -10,6 +10,19 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
+func handlerLog() func(gl routing.GameLog) pubsub.AckType {
+	return func(gl routing.GameLog) pubsub.AckType {
+		defer fmt.Print("> ")
+		err := gamelogic.WriteLog(gl)
+		if err != nil {
+			fmt.Printf("Error writing log to disk: %v\n", err)
+
+			return pubsub.NackRequeue
+		}
+		return pubsub.Ack
+	}
+}
+
 func main() {
 	fmt.Println("Starting Peril server...")
 
@@ -24,27 +37,27 @@ func main() {
 	}()
 	fmt.Println("connected to RabbitMQ")
 
-	// ch, err := conn.Channel()
-	// if err != nil {
-	// 	log.Fatalf("cannot create channel: %v", err)
-	// }
-	// defer ch.Close()
-	// fmt.Println("mq channel created")
-	ch, _, err := pubsub.DeclareAndBind(
-		conn,
-		routing.ExchangePerilTopic,
-		fmt.Sprintf("%s", routing.GameLogSlug),
-		fmt.Sprintf("%s.*", routing.GameLogSlug),
-		pubsub.Durable,
-	)
+	ch, err := conn.Channel()
 	if err != nil {
-		log.Fatalf("can't declare and bind queue: %v", err)
+		log.Fatalf("cannot create channel: %v", err)
 	}
 	defer ch.Close()
+	fmt.Println("mq channel created")
+	err = pubsub.SubscribeGob(
+		conn,
+		routing.ExchangePerilTopic,
+		routing.GameLogSlug,
+		routing.GameLogSlug+".*",
+		pubsub.Durable,
+		handlerLog(),
+	)
+	if err != nil {
+		log.Fatalf("could not subscribe to game logs: %v", err)
+	}
 
 	gamelogic.PrintServerHelp()
 	for {
-		fmt.Println("Please enter the server command:")
+		// fmt.Println("Please enter the server command:")
 		words := gamelogic.GetInput()
 		if len(words) == 0 {
 			continue
